@@ -1,4 +1,12 @@
-flask
-transformers
-torch
-gunicorn
+requests==2.31.0
+pandas==2.1.0
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.7
+cryptography==41.0.7
+pyjwt==2.8.0
+beautifulsoup4==4.12.2
+python-dotenv==1.0.0
+gunicorn==21.2.0
+flask==2.3.3
+redis==5.0.1
+celery==5.3.4
