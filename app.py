@@ -33,7 +33,7 @@ class RealMoneyHunterBot:
         """Use real PostgreSQL/MySQL instead of SQLite"""
         try:
             # PostgreSQL (real database)
-            self.engine = create_engine('postgresql://username:password@localhost/moneyhunter')
+            self.engine = create_engine('postgresql://moneyhunter_user:n75Eu7opKp3Y5VXb3r74KckW5vEFfDlR@dpg-d3j91d56ubrc73fi4av0-a.oregon-postgres.render.com/moneyhunter')
             Base.metadata.create_all(self.engine)
             Session = sessionmaker(bind=self.engine)
             self.db_session = Session()
