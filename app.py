@@ -431,8 +431,8 @@ class RealMoneyHunterBot:
             # Using real email service (Gmail example)
             smtp_server = "smtp.gmail.com"
             port = 587
-            sender_email = "your_real_email@gmail.com"  # Use real email
-            password = "your_app_password"  # Use real app password
+            sender_email = "jamalassker2032@gmail.com"  # Use real email
+            password = "cbod cvec huka iltz"  # Use real app password
 
             msg = MIMEText(report, 'plain', 'utf-8')
             msg["Subject"] = f"💰 Financial Opportunities Report - {datetime.now().strftime('%Y-%m-%d')}"
