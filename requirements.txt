@@ -1,11 +1,8 @@
-python==3.12
 requests==2.31.0
-pandas==2.2.2  # Updated to latest compatible version
 sqlalchemy==2.0.23
 psycopg2-binary==2.9.7
-cryptography==42.0.8
+cryptography==41.0.7
 pyjwt==2.8.0
 beautifulsoup4==4.12.2
 python-dotenv==1.0.0
-gunicorn==21.2.0
-flask==2.3.3
+mysql-connector-python==8.1.0
