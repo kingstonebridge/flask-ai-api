@@ -1,3 +1,4 @@
+python==3.12
 requests==2.31.0
 pandas==2.2.2  # Updated to latest compatible version
 sqlalchemy==2.0.23
