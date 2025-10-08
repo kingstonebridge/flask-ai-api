@@ -1,5 +1,4 @@
 import requests
-import pandas as pd
 import smtplib
 from email.mime.text import MIMEText
 import time
@@ -8,7 +7,7 @@ import logging
 import json
 from datetime import datetime
 import sqlalchemy
-from sqlalchemy import create_engine, Column, String, Float, DateTime, Boolean
+from sqlalchemy import create_engine, Column, String, Float, DateTime, Boolean, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import mysql.connector
@@ -37,14 +36,6 @@ class RealMoneyHunterBot:
             Base.metadata.create_all(self.engine)
             Session = sessionmaker(bind=self.engine)
             self.db_session = Session()
-            
-            # Alternative: MySQL
-            # self.mysql_conn = mysql.connector.connect(
-            #     host="localhost",
-            #     user="your_username",
-            #     password="your_password",
-            #     database="moneyhunter"
-            # )
             
         except Exception as e:
             # Fallback to SQLite but it's still a real database file
@@ -136,14 +127,17 @@ class RealMoneyHunterBot:
             response = requests.get(url, params=params, timeout=30)
             if response.status_code == 200:
                 data = response.json()
-                for business in data[1:]:  # Skip header
-                    results.append({
-                        'name': business[0],
-                        'address': f"Business located in {state}",
-                        'amount': float(business[4]) if business[4] else 0,
-                        'source': 'US Census Business Data',
-                        'state': state.upper()
-                    })
+                # Process data without pandas
+                if data and len(data) > 1:
+                    for business in data[1:]:  # Skip header
+                        if len(business) >= 5:
+                            results.append({
+                                'name': business[0],
+                                'address': f"Business located in {state}",
+                                'amount': float(business[4]) if business[4] and business[4].isdigit() else 0,
+                                'source': 'US Census Business Data',
+                                'state': state.upper()
+                            })
                     
         except Exception as e:
             self.logger.error(f"Census API search failed: {str(e)}")
@@ -310,10 +304,12 @@ class RealMoneyHunterBot:
             if response.status_code == 200:
                 data = response.json()
                 for bank in data.get('data', []):
+                    # Extract data without pandas
+                    bank_data = bank.get('data', {})
                     results.append({
-                        'name': bank.get('NAME', ''),
-                        'address': f"{bank.get('ADDRESS', '')}, {bank.get('CITY', '')}, {bank.get('STNAME', '')}",
-                        'amount': float(bank.get('ASSET', 0)),
+                        'name': bank_data.get('NAME', ''),
+                        'address': f"{bank_data.get('ADDRESS', '')}, {bank_data.get('CITY', '')}, {bank_data.get('STNAME', '')}",
+                        'amount': float(bank_data.get('ASSET', 0)),
                         'source': 'FDIC Bank Data',
                         'state': state.upper()
                     })
@@ -322,6 +318,30 @@ class RealMoneyHunterBot:
             self.logger.error(f"FDIC API search failed: {str(e)}")
             
         return results
+
+    def process_data_without_pandas(self, findings):
+        """Process data without using pandas"""
+        processed_data = []
+        total_amount = 0
+        
+        for finding in findings:
+            amount = finding.get('amount', 0)
+            total_amount += amount
+            
+            processed_data.append({
+                'name': finding.get('name', 'Unknown'),
+                'amount': amount,
+                'state': finding.get('state', 'Unknown'),
+                'source': finding.get('source', 'Unknown'),
+                'address': finding.get('address', 'Not specified')
+            })
+        
+        return {
+            'data': processed_data,
+            'total_findings': len(processed_data),
+            'total_amount': total_amount,
+            'states': list(set([f.get('state', '') for f in processed_data]))
+        }
 
     def store_findings_real_db(self, findings):
         """Store in real database with proper constraints"""
@@ -432,7 +452,7 @@ class RealMoneyHunterBot:
             smtp_server = "smtp.gmail.com"
             port = 587
             sender_email = "jamalassker2032@gmail.com"  # Use real email
-            password = "cbod cvec huka iltz"  # Use real app password
+            password = "cbod cvec huka iltz"  # Use real app password
 
             msg = MIMEText(report, 'plain', 'utf-8')
             msg["Subject"] = f"💰 Financial Opportunities Report - {datetime.now().strftime('%Y-%m-%d')}"
@@ -520,8 +540,8 @@ class Finding(Base):
     __tablename__ = 'findings'
     
     id = Column(String, primary_key=True)
-    name = Column(String, nullable=False)
-    address = Column(String)
+    name = Column(Text, nullable=False)
+    address = Column(Text)
     amount = Column(Float)
     source = Column(String)
     state = Column(String)
