@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 import queue
 import uuid
 from dotenv import load_dotenv
-import ccxt
+import ccxt # Although ccxt is not used for Deriv, it was in your original code
 
 # Load environment variables
 load_dotenv()
@@ -519,6 +519,9 @@ class CryptoScalpingBot:
                 return False
 
             contract_id = buy_data['buy']['contract_id']
+            # Get the exact contract end time for accurate polling
+            # This is crucial for 1-tick trades where 'date_expiry' will be set very close to 'purchase_time'
+            date_expiry = buy_data['buy']['date_expiry'] 
 
             # Store trade
             self.store_trade(signal, contract_id, stake, 'deriv')
@@ -526,12 +529,15 @@ class CryptoScalpingBot:
             # Update signal status
             signal['status'] = 'active'
             signal['contract_id'] = contract_id
+            signal['date_expiry'] = date_expiry
+            
             self.broadcast_trade_update({
                 'type': 'trade_active',
                 'symbol': symbol,
                 'direction': direction,
                 'stake': stake,
                 'contract_id': contract_id,
+                'date_expiry': date_expiry,
                 'status': 'active',
                 'timestamp': datetime.now().isoformat()
             })
@@ -547,70 +553,129 @@ class CryptoScalpingBot:
             return False
 
     async def monitor_scalp_trade(self, contract_id, stake, signal):
-        """Monitor scalp trade - ULTRA FAST"""
+        """
+        FIXED: Monitor scalp trade - Poll Deriv API for real result
+        """
         try:
-            # FAST SCALPING: Very short duration
-            duration = 60  # 1 minute for scalping
+            # The expiration time (in seconds) for a 1-tick trade is very short.
+            # We'll calculate a reasonable timeout based on the reported expiry time + a buffer.
+            expiry_time_utc = datetime.fromtimestamp(signal['date_expiry'])
+            current_time_utc = datetime.now()
             
-            for i in range(duration):
-                if i % 10 == 0:
-                    remaining = duration - i
-                    self.broadcast_trade_update({
-                        'type': 'trade_countdown',
-                        'contract_id': contract_id,
-                        'remaining_seconds': remaining,
-                        'symbol': signal['symbol'],
-                        'status': 'counting_down',
-                        'timestamp': datetime.now().isoformat()
-                    })
-                await asyncio.sleep(1)
-
-            # Scalping has higher risk but faster results
-            confidence = signal.get('confidence', 0.70)
-            success_rate = confidence * 0.90  # Slightly lower for speed
-            success = success_rate > 0.60
+            # The duration of a 1-tick trade is virtually instantaneous, but we need time for the 
+            # broker to process the result and update the contract status.
+            time_to_expiry_seconds = max(0.5, (expiry_time_utc - current_time_utc).total_seconds()) 
             
-            # Higher payout for scalping
-            profit = stake * 0.90 if success else -stake  # 90% payout
+            # Use a total timeout for the API call to ensure the bot doesn't hang
+            # We'll set a total polling duration of 15 seconds to cover the quick expiry + network latency
+            max_polling_duration = 15 
+            polling_end_time = time.time() + max_polling_duration
+            
+            logging.info(f"⏳ Monitoring contract {contract_id}. Will poll for status until settled.")
 
-            # Update balances
-            self.current_balance += profit
-            self.daily_profit += profit
-            self.weekly_profit += profit
-            self.update_daily_target()
+            while time.time() < polling_end_time:
+                # 1. Send proposal_open_contract request to Deriv
+                monitor_request = {
+                    "proposal_open_contract": 1,
+                    "contract_id": contract_id,
+                    "subscribe": 0  # We only want one response
+                }
+                
+                await self.deriv_ws.send(json.dumps(monitor_request))
+                
+                try:
+                    # Wait for response, use a short timeout
+                    response = await asyncio.wait_for(self.deriv_ws.recv(), timeout=5)
+                    data = json.loads(response)
 
-            # Update statistics
-            self.total_trades += 1
-            if success:
-                self.successful_trades += 1
+                    if 'error' in data:
+                        logging.error(f"❌ Deriv monitoring error for {contract_id}: {data['error']['message']}")
+                        # Continue polling, maybe it was a transient error
+                        await asyncio.sleep(1) 
+                        continue
 
-            # Update database
-            self.update_trade(contract_id, success, profit)
+                    contract_data = data.get('proposal_open_contract', {})
+                    
+                    if contract_data.get('is_sold') == 1:
+                        # Contract is settled, get the real profit/loss
+                        
+                        # The final profit/loss is stored in 'profit' (can be negative)
+                        profit = contract_data.get('profit', 0.0) 
+                        
+                        # 'buy_price' is the stake
+                        stake_amount = contract_data.get('buy_price', stake)
+                        
+                        # A trade is successful if profit is positive (excluding the stake)
+                        # profit = payout - stake. If profit > 0, it's a win.
+                        success = profit > 0
+                        result_type = 'win' if success else 'loss'
+                        
+                        # --- UPDATE BALANCES AND STATS ---
+                        self.current_balance += profit
+                        self.daily_profit += profit
+                        self.weekly_profit += profit
+                        self.update_daily_target()
 
-            # Broadcast result
-            result_type = 'win' if success else 'loss'
-            self.broadcast_trade_update({
-                'type': 'trade_result',
-                'contract_id': contract_id,
-                'symbol': signal['symbol'],
-                'result': result_type,
-                'profit': profit,
-                'current_balance': self.current_balance,
-                'daily_profit': self.daily_profit,
-                'daily_target': self.daily_target,
-                'status': 'completed',
-                'timestamp': datetime.now().isoformat()
-            })
+                        self.total_trades += 1
+                        if success:
+                            self.successful_trades += 1
 
-            # Update signal status
-            signal['status'] = 'completed'
-            signal['result'] = result_type
-            signal['profit'] = profit
+                        # Update database with real result
+                        self.update_trade(contract_id, success, profit)
 
-            logging.info(f"💰 SCALP COMPLETED: {result_type.upper()} ${profit:.2f}")
+                        # Broadcast final result
+                        self.broadcast_trade_update({
+                            'type': 'trade_result',
+                            'contract_id': contract_id,
+                            'symbol': signal['symbol'],
+                            'result': result_type,
+                            'profit': round(profit, 2),
+                            'current_balance': round(self.current_balance, 2),
+                            'daily_profit': round(self.daily_profit, 2),
+                            'daily_target': round(self.daily_target, 2),
+                            'status': 'completed',
+                            'timestamp': datetime.now().isoformat()
+                        })
+
+                        logging.info(f"✅ REAL SCALP COMPLETED: {result_type.upper()} Real P/L: ${profit:.2f}")
+                        
+                        # Exit the monitoring loop
+                        return 
+                    
+                    else:
+                        # Contract is not yet sold/settled. 
+                        # This happens often with 1-tick trades where a final response can take a few seconds.
+                        logging.info(f"🕒 Contract {contract_id} not settled yet. Polling...")
+                        
+                        # Brief wait before polling again
+                        await asyncio.sleep(1) 
+
+                except asyncio.TimeoutError:
+                    logging.warning(f"⚠️ Deriv API timeout for {contract_id}. Retrying...")
+                    await asyncio.sleep(1)
+                except websockets.exceptions.ConnectionClosedOK:
+                    logging.error("❌ WebSocket closed during monitoring.")
+                    break
+                except Exception as e:
+                    logging.error(f"❌ Unexpected error during contract monitoring: {e}")
+                    break
+
+            # If the loop finishes without a final result, the trade outcome is unknown
+            if 'is_sold' not in contract_data or contract_data.get('is_sold') != 1:
+                 logging.error(f"🚨 FAILED TO GET REAL RESULT FOR {contract_id} within timeout. Manual check required.")
+                 # Mark as failed in the system, but don't adjust balance until manually confirmed
+                 self.broadcast_trade_update({
+                    'type': 'trade_error',
+                    'contract_id': contract_id,
+                    'symbol': signal['symbol'],
+                    'message': 'Failed to get final result from Deriv API.',
+                    'status': 'error',
+                    'timestamp': datetime.now().isoformat()
+                })
+
 
         except Exception as e:
-            logging.error(f"❌ Scalp monitoring error: {e}")
+            logging.error(f"❌ Scalp monitoring thread error: {e}")
 
     def store_signal(self, signal):
         """Store signal"""
@@ -672,13 +737,15 @@ class CryptoScalpingBot:
             result_text = 'win' if success else 'loss'
 
             cursor.execute('''
-                UPDATE crypto_trades SET result = ?, profit = ? WHERE id = (
+                UPDATE crypto_trades SET profit = ?, balance_after = ?, result = ? 
+                WHERE id = (
                     SELECT id FROM crypto_trades ORDER BY id DESC LIMIT 1
                 )
-            ''', (result_text, profit))
+            ''', (profit, self.current_balance, result_text)) # Fixed position of result=
 
             cursor.execute('''
-                UPDATE crypto_signals SET result = ?, profit = ? WHERE signal_id = (
+                UPDATE crypto_signals SET status = 'completed', result = ?, profit = ? 
+                WHERE signal_id = (
                     SELECT signal_id FROM crypto_trades ORDER BY id DESC LIMIT 1
                 )
             ''', (result_text, profit))
@@ -857,6 +924,7 @@ class CryptoScalpingBot:
             trading_task = asyncio.create_task(self.crypto_scalping_cycle())
 
             def run_flask():
+                # Corrected: Only run the Flask app
                 app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 
             flask_thread = threading.Thread(target=run_flask)
