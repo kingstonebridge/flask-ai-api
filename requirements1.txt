@@ -1,5 +1,8 @@
-# requirements.txt
-setuptools wheel
+# Standard build packages that are often helpful to include
+setuptools
+wheel
+
+# Your application dependencies
 aiohttp==3.9.1
 websockets==12.0
 flask==2.3.3
